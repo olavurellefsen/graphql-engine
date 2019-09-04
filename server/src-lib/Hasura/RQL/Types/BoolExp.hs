@@ -6,8 +6,11 @@ module Hasura.RQL.Types.BoolExp
 
        , DWithinGeomOp(..)
        , DWithinGeogOp(..)
+       , CastExp
        , OpExpG(..)
        , opExpDepCol
+       , STIntersectsNbandGeommin(..)
+       , STIntersectsGeomminNband(..)
 
        , AnnBoolExpFld(..)
        , AnnBoolExp
@@ -19,6 +22,8 @@ module Hasura.RQL.Types.BoolExp
        , AnnBoolExpFldSQL
        , AnnBoolExpSQL
        , PartialSQLExp(..)
+       , mkTypedSessionVar
+       , isStaticValue
        , AnnBoolExpFldPartialSQL
        , AnnBoolExpPartialSQL
 
@@ -28,6 +33,7 @@ module Hasura.RQL.Types.BoolExp
        ) where
 
 import           Hasura.Prelude
+import           Hasura.RQL.Types.Column
 import           Hasura.RQL.Types.Common
 import           Hasura.RQL.Types.Permission
 import qualified Hasura.SQL.DML              as S
@@ -108,7 +114,7 @@ data DWithinGeomOp a =
   DWithinGeomOp
   { dwgeomDistance :: !a
   , dwgeomFrom     :: !a
-  } deriving (Show, Eq, Functor, Foldable, Traversable)
+  } deriving (Show, Eq, Functor, Foldable, Traversable, Data)
 $(deriveJSON (aesonDrop 6 snakeCase) ''DWithinGeomOp)
 
 data DWithinGeogOp a =
@@ -116,11 +122,29 @@ data DWithinGeogOp a =
   { dwgeogDistance    :: !a
   , dwgeogFrom        :: !a
   , dwgeogUseSpheroid :: !a
-  } deriving (Show, Eq, Functor, Foldable, Traversable)
+  } deriving (Show, Eq, Functor, Foldable, Traversable, Data)
 $(deriveJSON (aesonDrop 6 snakeCase) ''DWithinGeogOp)
 
+data STIntersectsNbandGeommin a =
+  STIntersectsNbandGeommin
+  { singNband   :: !a
+  , singGeommin :: !a
+  } deriving (Show, Eq, Functor, Foldable, Traversable, Data)
+$(deriveJSON (aesonDrop 4 snakeCase) ''STIntersectsNbandGeommin)
+
+data STIntersectsGeomminNband a =
+  STIntersectsGeomminNband
+  { signGeommin :: !a
+  , signNband   :: !(Maybe a)
+  } deriving (Show, Eq, Functor, Foldable, Traversable, Data)
+$(deriveJSON (aesonDrop 4 snakeCase) ''STIntersectsGeomminNband)
+
+type CastExp a = M.HashMap PGScalarType [OpExpG a]
+
 data OpExpG a
-  = AEQ !Bool !a
+  = ACast !(CastExp a)
+
+  | AEQ !Bool !a
   | ANE !Bool !a
 
   | AIN  !a
@@ -156,6 +180,10 @@ data OpExpG a
   | ASTTouches !a
   | ASTWithin !a
 
+  | ASTIntersectsRast !a
+  | ASTIntersectsGeomNband !(STIntersectsGeomminNband a)
+  | ASTIntersectsNbandGeom !(STIntersectsNbandGeommin a)
+
   | ANISNULL -- IS NULL
   | ANISNOTNULL -- IS NOT NULL
 
@@ -165,7 +193,7 @@ data OpExpG a
   | CLT !PGCol
   | CGTE !PGCol
   | CLTE !PGCol
-  deriving (Eq, Show, Functor, Foldable, Traversable)
+  deriving (Eq, Show, Functor, Foldable, Traversable, Data)
 
 opExpDepCol :: OpExpG a -> Maybe PGCol
 opExpDepCol = \case
@@ -179,6 +207,8 @@ opExpDepCol = \case
 
 opExpToJPair :: (a -> Value) -> OpExpG a -> (Text, Value)
 opExpToJPair f = \case
+  ACast a        -> ("_cast", toJSON $ M.map opExpsToJSON a)
+
   AEQ _ a          -> ("_eq", f a)
   ANE _ a          -> ("_ne", f a)
 
@@ -215,6 +245,10 @@ opExpToJPair f = \case
   ASTTouches a     -> ("_st_touches", f a)
   ASTWithin a      -> ("_st_within", f a)
 
+  ASTIntersectsRast a      -> ("_st_intersects_rast", f a)
+  ASTIntersectsNbandGeom a -> ("_st_intersects_nband_geom", toJSON $ f <$> a)
+  ASTIntersectsGeomNband a -> ("_st_intersects_geom_nband", toJSON $ f <$> a)
+
   ANISNULL       -> ("_is_null", toJSON True)
   ANISNOTNULL    -> ("_is_null", toJSON False)
 
@@ -224,9 +258,11 @@ opExpToJPair f = \case
   CLT a          -> ("_clt", toJSON a)
   CGTE a         -> ("_cgte", toJSON a)
   CLTE a         -> ("_clte", toJSON a)
+  where
+    opExpsToJSON = object . map (opExpToJPair f)
 
 data AnnBoolExpFld a
-  = AVCol !PGColInfo ![OpExpG a]
+  = AVCol !PGColumnInfo ![OpExpG a]
   | AVRel !RelInfo !(AnnBoolExp a)
   deriving (Show, Eq, Functor, Foldable, Traversable)
 
@@ -270,9 +306,13 @@ type PreSetCols = M.HashMap PGCol S.SQLExp
 
 -- doesn't resolve the session variable
 data PartialSQLExp
-  = PSESessVar !PgType !SessVar
+  = PSESessVar !(PGType PGScalarType) !SessVar
   | PSESQLExp !S.SQLExp
-  deriving (Show, Eq)
+  deriving (Show, Eq, Data)
+
+mkTypedSessionVar :: PGType PGColumnType -> SessVar -> PartialSQLExp
+mkTypedSessionVar columnType =
+  PSESessVar (unsafePGColumnToRepresentation <$> columnType)
 
 instance ToJSON PartialSQLExp where
   toJSON = \case
@@ -294,3 +334,8 @@ instance ToJSON AnnBoolExpPartialSQL where
       opExpSToJSON :: OpExpG PartialSQLExp -> Value
       opExpSToJSON =
         object . pure . opExpToJPair toJSON
+
+isStaticValue :: PartialSQLExp -> Bool
+isStaticValue = \case
+  PSESessVar _ _ -> False
+  PSESQLExp _    -> True

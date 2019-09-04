@@ -1,6 +1,5 @@
 module Hasura.RQL.Types.Common
-       ( PGColInfo(..)
-       , RelName(..)
+       ( RelName(..)
        , relNameToTxt
        , RelType(..)
        , rootRelName
@@ -10,9 +9,6 @@ module Hasura.RQL.Types.Common
        , FieldName(..)
        , fromPGCol
        , fromRel
-
-       , TQueryName(..)
-       , TemplateParam(..)
 
        , ToAesonPairs(..)
        , WithTable(..)
@@ -25,6 +21,8 @@ module Hasura.RQL.Types.Common
        , unNonEmptyText
        , adminText
        , rootText
+
+       , FunctionArgName(..)
        ) where
 
 import           Hasura.Prelude
@@ -40,15 +38,6 @@ import qualified Database.PG.Query          as Q
 import           Instances.TH.Lift          ()
 import           Language.Haskell.TH.Syntax (Lift)
 import qualified PostgreSQL.Binary.Decoding as PD
-
-data PGColInfo
-  = PGColInfo
-  { pgiName       :: !PGCol
-  , pgiType       :: !PGColType
-  , pgiIsNullable :: !Bool
-  } deriving (Show, Eq)
-
-$(deriveJSON (aesonDrop 3 snakeCase) ''PGColInfo)
 
 newtype NonEmptyText = NonEmptyText {unNonEmptyText :: T.Text}
   deriving (Show, Eq, Ord, Hashable, ToJSON, ToJSONKey, Lift, Q.ToPrepArg, DQuote)
@@ -146,24 +135,6 @@ fromPGCol (PGCol c) = FieldName c
 fromRel :: RelName -> FieldName
 fromRel = FieldName . relNameToTxt
 
-newtype TQueryName
-  = TQueryName { getTQueryName :: NonEmptyText }
-  deriving ( Show, Eq, Hashable, FromJSONKey, ToJSONKey
-           , FromJSON, ToJSON, Q.ToPrepArg, Q.FromCol, Lift)
-
-instance IsIden TQueryName where
-  toIden (TQueryName r) = Iden $ unNonEmptyText r
-
-instance DQuote TQueryName where
-  dquoteTxt (TQueryName r) = unNonEmptyText r
-
-newtype TemplateParam
-  = TemplateParam { getTemplateParam :: T.Text }
-  deriving (Show, Eq, Hashable, FromJSON, FromJSONKey, ToJSONKey, ToJSON, Lift)
-
-instance DQuote TemplateParam where
-  dquoteTxt (TemplateParam r) = r
-
 class ToAesonPairs a where
   toAesonPairs :: (KeyValue v) => a -> [v]
 
@@ -205,3 +176,7 @@ data ForeignKey
 $(deriveJSON (aesonDrop 3 snakeCase) ''ForeignKey)
 
 instance Hashable ForeignKey
+
+newtype FunctionArgName =
+  FunctionArgName { getFuncArgNameTxt :: T.Text}
+  deriving (Show, Eq, ToJSON)
